@@ -1,0 +1,15 @@
+apiVersion: v2
+name: gateway
+description: Velocity Minecraft proxy for PrimCraft
+type: application
+version: 2026.2.7
+appVersion: "3.4.0"
+keywords:
+  - minecraft
+  - velocity
+  - proxy
+home: https://github.com/PrimCraft/gateway
+sources:
+  - https://github.com/PrimCraft/gateway
+maintainers:
+  - name: bakas

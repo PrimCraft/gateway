@@ -1,0 +1,44 @@
+# Plugin manifest for Velocity proxy
+#
+# Version constraints (semver):
+#   "latest"       - Latest available version
+#   "5.4.3"        - Exact version
+#   ">=5.0.0"      - Minimum version
+#   "~3.4"         - Patch updates only (>=3.4.0, <3.5.0)
+#   "^3.4"         - Minor updates (>=3.4.0, <4.0.0)
+#   "~3.4.0-0"     - Include prereleases (SNAPSHOT, alpha, etc.)
+
+velocity:
+  # https://papermc.io/downloads/velocity
+  # Use -0 suffix to include SNAPSHOT versions
+  version: "~3.4.0-0"
+
+plugins:
+  # TAB - Tab list customization
+  # https://github.com/NEZNAMY/TAB
+  tab:
+    source: hangar
+    project: "NEZNAMY/TAB"
+    version: ">=5.0.0"  # Allow 5.x updates
+    platform: VELOCITY
+
+  # Example: LuckPerms from Modrinth
+  # luckperms:
+  #   source: modrinth
+  #   project: "luckperms"
+  #   version: "~5.4"           # Patch updates only (>=5.4.0, <5.5.0)
+  #   loader: velocity
+  #   game_versions: ["1.21"]   # Optional: filter by MC version
+
+  # Example: Private plugin from S3
+  # custom-plugin:
+  #   source: s3
+  #   bucket: primcraft-plugins
+  #   key: "custom-plugin/${version}/custom-plugin.jar"
+  #   version: "1.0.0"          # Required for S3 with ${version} placeholder
+
+  # Example: Direct URL (GitHub release)
+  # some-plugin:
+  #   source: url
+  #   url: "https://github.com/org/repo/releases/download/v1.0/plugin.jar"
+  #   version: "1.0"

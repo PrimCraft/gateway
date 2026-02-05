@@ -1,0 +1,208 @@
+name: Update Plugins
+
+on:
+  schedule:
+    - cron: '0 0 * * 0'  # Weekly, Sunday midnight UTC
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force rebuild even if no changes'
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write
+  contents: write
+
+env:
+  AWS_REGION: ap-northeast-1
+  ECR_REPOSITORY: primcraft/gateway
+  SCAF_VERSION: "0.1.0"
+
+jobs:
+  check-updates:
+    runs-on: ubuntu-latest  # scaf only available for x86
+    outputs:
+      has_updates: ${{ steps.compare.outputs.has_updates }}
+      changelog: ${{ steps.compare.outputs.changelog }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install scaf
+        run: |
+          curl -sL "https://github.com/PrimCraft/scaf/releases/download/v${SCAF_VERSION}/scaf_${SCAF_VERSION}_linux_amd64.tar.gz" | tar xz
+          chmod +x scaf
+          sudo mv scaf /usr/local/bin/
+
+      - name: Resolve latest plugin versions
+        run: scaf resolve --manifest plugins.yaml --output resolved.lock.yaml
+
+      - name: Compare with current lock
+        id: compare
+        run: |
+          if ! diff -q plugins.lock.yaml resolved.lock.yaml > /dev/null 2>&1; then
+            echo "has_updates=true" >> $GITHUB_OUTPUT
+
+            echo "changelog<<EOF" >> $GITHUB_OUTPUT
+            scaf changelog plugins.lock.yaml resolved.lock.yaml >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+
+            echo "### Plugin Updates Detected :package:" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            scaf changelog plugins.lock.yaml resolved.lock.yaml >> $GITHUB_STEP_SUMMARY
+          else
+            echo "has_updates=false" >> $GITHUB_OUTPUT
+            echo "### No Updates :white_check_mark:" >> $GITHUB_STEP_SUMMARY
+            echo "All plugins are up to date." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload resolved lock file
+        if: steps.compare.outputs.has_updates == 'true' || inputs.force
+        uses: actions/upload-artifact@v4
+        with:
+          name: resolved-lock
+          path: resolved.lock.yaml
+
+  build-and-release:
+    needs: check-updates
+    if: needs.check-updates.outputs.has_updates == 'true' || inputs.force
+    runs-on: arc-primcraft  # Self-hosted ARM64 runner
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install tools
+        run: |
+          mkdir -p $HOME/.local/bin
+          # Install yq (not pre-installed on self-hosted runner)
+          curl -sL https://github.com/mikefarah/yq/releases/latest/download/yq_linux_arm64 -o $HOME/.local/bin/yq
+          chmod +x $HOME/.local/bin/yq
+          # Install AWS CLI (not pre-installed on self-hosted runner)
+          curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o "awscliv2.zip"
+          unzip -q awscliv2.zip
+          ./aws/install --bin-dir $HOME/.local/bin --install-dir $HOME/.local/aws-cli --update
+          rm -rf aws awscliv2.zip
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Download resolved lock file
+        uses: actions/download-artifact@v4
+        with:
+          name: resolved-lock
+
+      - name: Update lock file
+        run: mv resolved.lock.yaml plugins.lock.yaml
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Generate version tag
+        id: version
+        run: |
+          VERSION=$(date +%Y.%-m.%-d)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Build image
+        run: |
+          docker build -t gateway:test \
+                       --build-arg USE_LOCK_FILE=true \
+                       -f docker/Dockerfile .
+
+      - name: Test - Velocity starts successfully
+        run: |
+          # Create minimal config for testing
+          mkdir -p test-config
+          cat > test-config/velocity.toml << 'EOF'
+          config-version = "2.7"
+          bind = "0.0.0.0:25565"
+          motd = "Test"
+          show-max-players = 100
+          online-mode = false
+          player-info-forwarding-mode = "none"
+          [servers]
+          [advanced]
+          EOF
+
+          echo "test-secret" > test-config/forwarding.secret
+
+          # Start container
+          docker run -d --name velocity-test \
+            -p 25565:25565 \
+            -v $(pwd)/test-config/velocity.toml:/velocity/velocity.toml:ro \
+            -v $(pwd)/test-config/forwarding.secret:/velocity/forwarding.secret:ro \
+            gateway:test
+
+          # Wait for startup
+          echo "Waiting for Velocity to start..."
+          sleep 15
+
+          # Check it's still running
+          if ! docker ps | grep -q velocity-test; then
+            echo "::error::Container crashed on startup"
+            docker logs velocity-test
+            exit 1
+          fi
+
+          # Check for successful startup in logs
+          if docker logs velocity-test 2>&1 | grep -q "Done"; then
+            echo "Velocity started successfully"
+          else
+            echo "::warning::Could not confirm Velocity startup"
+            docker logs velocity-test
+          fi
+
+          # TCP health check
+          timeout 5 bash -c 'cat < /dev/null > /dev/tcp/localhost/25565' || {
+            echo "::error::Port 25565 not responding"
+            exit 1
+          }
+
+          docker stop velocity-test
+          docker rm velocity-test
+          echo "Tests passed!"
+
+      - name: Push to ECR
+        run: |
+          docker tag gateway:test ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.version.outputs.version }}
+          docker tag gateway:test ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.version.outputs.version }}
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+
+      - name: Commit updated lock file
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add plugins.lock.yaml
+          git commit -m "chore: update plugins to ${{ steps.version.outputs.version }}" || echo "No changes to commit"
+          git push
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          body: |
+            ## Plugin Updates
+
+            ${{ needs.check-updates.outputs.changelog }}
+
+            ## Image
+            ```
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.version.outputs.version }}
+            ```
+          generate_release_notes: false
+
+      - name: Summary
+        run: |
+          echo "### Release Complete :rocket:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** \`${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY

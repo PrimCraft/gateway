@@ -1,0 +1,180 @@
+# Gateway (Velocity) Helm chart values
+
+replicaCount: 1
+
+image:
+  repository: ""  # Set by Flux/CI (e.g., <account>.dkr.ecr.ap-northeast-1.amazonaws.com/primcraft/gateway)
+  tag: ""         # Set by Flux/CI
+  pullPolicy: IfNotPresent
+
+# Resource limits
+resources:
+  requests:
+    memory: "512Mi"
+    cpu: "250m"
+  limits:
+    memory: "1Gi"
+    cpu: "1000m"
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 25565
+
+# Node scheduling - run on spot workers
+nodeSelector:
+  node-type: spot
+
+tolerations:
+  - key: "lifecycle"
+    operator: "Equal"
+    value: "spot"
+    effect: "NoSchedule"
+
+# Velocity configuration
+# https://docs.papermc.io/velocity/configuration
+config:
+  velocity:
+    # Bind address
+    bind: "0.0.0.0:25565"
+
+    # MOTD - supports MiniMessage format
+    motd: "<aqua><bold>PrimCraft</bold></aqua> <gray>|</gray> <yellow>Survival & Adventure</yellow>"
+
+    # Max players shown in server list
+    showMaxPlayers: 100
+
+    # Online mode (authenticate with Mojang)
+    onlineMode: true
+
+    # HAProxy/PROXY protocol - enables real client IP when behind a proxy
+    # Set to true when using Traefik IngressRouteTCP with proxyProtocol
+    haproxyProtocol: false
+
+    # Player info forwarding to backend servers
+    # Options: none, legacy, bungeeguard, modern
+    playerInfoForwardingMode: modern
+
+    # Backend servers
+    servers:
+      lobby:
+        address: "lobby.primcraft.svc.cluster.local:25565"
+      survival:
+        address: "survival.primcraft.svc.cluster.local:25565"
+
+    # Default server order
+    try:
+      - lobby
+      - survival
+
+    # Forced hosts (optional)
+    forcedHosts: {}
+      # "lobby.primcraft.com": lobby
+      # "survival.primcraft.com": survival
+
+  # Plugin configuration files
+  # Structure: plugins.<plugin-name>.<filename>: |
+  #   <raw config content>
+  #
+  # Files are mounted to /velocity/plugins/<plugin-name>/<filename>
+  # Use lowercase plugin names (e.g., "tab" not "TAB")
+  #
+  # Example for adding another plugin:
+  # plugins:
+  #   luckperms:
+  #     config.yml: |
+  #       # LuckPerms config here
+  plugins:
+    tab:
+      # https://github.com/NEZNAMY/TAB/wiki
+      config.yml: |
+        header-footer:
+          enabled: true
+          header:
+            - ""
+            - "<aqua><bold>PrimCraft</bold></aqua>"
+            - "<gray>play.primcraft.com</gray>"
+            - ""
+          footer:
+            - ""
+            - "<gray>Online:</gray> <white>%online%</white>"
+            - ""
+
+        tablist-name-formatting:
+          enabled: true
+          anti-override: true
+
+        scoreboard-teams:
+          enabled: true
+          enable-collision: true
+          invisible-nametags: false
+          anti-override: true
+          sorting-types:
+            - "GROUPS:owner,admin,mod,helper,builder,vip,default"
+            - "PLACEHOLDER_A_TO_Z:%player%"
+          case-sensitive-sorting: true
+
+        playerlist-objective:
+          enabled: true
+          value: "%ping%"
+          fancy-value: "&7Ping: %ping%"
+
+        belowname-objective:
+          enabled: false
+
+        prevent-spectator-effect:
+          enabled: false
+
+        bossbar:
+          enabled: false
+
+        scoreboard:
+          enabled: false
+
+        layout:
+          enabled: false
+
+        ping-spoof:
+          enabled: false
+
+        placeholders:
+          date-format: "dd.MM.yyyy"
+          time-format: "HH:mm:ss"
+          time-offset: 0
+
+        global-playerlist:
+          enabled: true
+          display-others-as-spectators: false
+          isolate-unlisted-servers: false
+
+        debug: false
+
+      groups.yml: |
+        _DEFAULT_:
+          tabprefix: ""
+          tagprefix: ""
+          customtabname: "%player%"
+          tabsuffix: ""
+          tagsuffix: ""
+
+      animations.yml: |
+        # Define custom animations here
+        # Example:
+        # MyAnimation:
+        #   change-interval: 500
+        #   texts:
+        #     - "&aFrame 1"
+        #     - "&bFrame 2"
+
+# Forwarding secret (will be auto-generated if not set)
+# Should be set via Flux HelmRelease secretRef
+forwardingSecret: ""
+
+# Pod annotations
+podAnnotations: {}
+
+# Security context
+securityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
