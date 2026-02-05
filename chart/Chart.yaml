@@ -2,7 +2,7 @@ apiVersion: v2
 name: gateway
 description: Velocity Minecraft proxy for PrimCraft
 type: application
-version: 2026.2.7
+version: 2026.2.5
 appVersion: "3.4.0"
 keywords:
   - minecraft
